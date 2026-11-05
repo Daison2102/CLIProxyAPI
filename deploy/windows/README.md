@@ -8,6 +8,10 @@ Run it with a hidden PowerShell window from a per-user logon task. A locked desk
 keeps running. Starting before any Windows sign-in requires a machine-level service
 or scheduled task configured by an administrator.
 
+Use `Restart-Hub.ps1` to restart the registered task. It waits for the old watchdog
+to release its mutex before starting a replacement, avoiding Task Scheduler's
+ignore-new-instance race during shutdown.
+
 The server listens on loopback port 8317. Tailscale Serve publishes that endpoint
 privately as HTTPS on port 8317. Existing Serve endpoints are preserved.
 
