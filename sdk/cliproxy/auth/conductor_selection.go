@@ -675,6 +675,12 @@ func selectionArgForSelector(selector Selector, routeModel string) string {
 
 func selectorContextForAvailableAuths(ctx context.Context, selector Selector, routeModel string) context.Context {
 	ctx = withWeightedSelectorStateModel(ctx, selector, routeModel)
+	if _, reset := selector.(*SoonestResetSelector); reset {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return context.WithValue(ctx, prevalidatedAuthCandidatesKey{}, true)
+	}
 	if !isBuiltInSelector(selector) {
 		if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
 			return ctx
