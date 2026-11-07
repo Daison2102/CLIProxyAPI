@@ -827,6 +827,14 @@ func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byt
 			}
 			hasHeaders = true
 		}
+		if !hasCodexQuotaHeaders(errMsg.Addon) {
+			for key, values := range codexQuotaResetHeaders(errMsg, status, time.Now().Unix()) {
+				if errSet := headersDoc.Set(key, values[0]); errSet != nil {
+					return nil, errSet
+				}
+				hasHeaders = true
+			}
+		}
 		if hasHeaders {
 			if errSet := payloadDoc.SetRawBytes("headers", headersDoc.Bytes()); errSet != nil {
 				return nil, errSet

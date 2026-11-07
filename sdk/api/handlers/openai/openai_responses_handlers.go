@@ -1013,7 +1013,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.writeResponsesError(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -1039,7 +1039,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.writeResponsesError(c, errMsg)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -1164,7 +1164,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			// Upstream failed before SSE was committed. Return JSON with HTTP status.
 			safeErrMsg := sanitizeResponsesInitialErrorMessage(errMsg)
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), safeErrMsg)
-			h.WriteErrorResponse(c, safeErrMsg)
+			h.writeResponsesError(c, safeErrMsg)
 			if safeErrMsg != nil {
 				cliCancel(safeErrMsg.Error)
 			} else {
@@ -1218,7 +1218,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				}
 
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
-				h.WriteErrorResponse(c, errMsg)
+				h.writeResponsesError(c, errMsg)
 				if errMsg != nil {
 					cliCancel(errMsg.Error)
 				} else {
