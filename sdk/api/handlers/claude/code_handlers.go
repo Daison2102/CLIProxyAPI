@@ -636,7 +636,9 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 		}
 	}
 
-	body, err := json.Marshal(h.toClaudeError(msg))
+	response := h.toClaudeError(msg)
+	response.Error.Message = withClaudeResetHint(response.Error.Message, status, c.Writer.Header().Get("Retry-After"))
+	body, err := json.Marshal(response)
 	if err != nil {
 		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
 	}
