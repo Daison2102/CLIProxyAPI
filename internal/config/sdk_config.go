@@ -140,6 +140,9 @@ type ClaudeClientConfig struct {
 
 // CodexClientConfig configures Codex client compatibility and the model catalog.
 type CodexClientConfig struct {
+	// OpenAIOnlyModelCatalog limits the Codex client catalog to OpenAI-backed models.
+	OpenAIOnlyModelCatalog bool `yaml:"openai-only-model-catalog" json:"openai-only-model-catalog"`
+
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests across providers.
 	// Default false leaves the client's multi-agent behavior unchanged.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`

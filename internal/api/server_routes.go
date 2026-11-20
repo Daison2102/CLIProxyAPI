@@ -720,6 +720,9 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 	for _, entry := range entries {
 		models = append(models, formatHomeCodexModelWithSettings(entry, cfg))
 	}
+	if cfg != nil && cfg.Client.Codex.OpenAIOnlyModelCatalog && clientVersion != "cpa" {
+		models = codexmodels.OpenAIBackedModels(models, homeProvidersForModel(entries))
+	}
 
 	var webSearchCapabilityForModel codexmodels.WebSearchCapabilityForModelFunc
 	if clientVersion == "cpa" {

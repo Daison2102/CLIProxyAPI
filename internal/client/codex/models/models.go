@@ -4,6 +4,7 @@ package models
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,21 @@ type codexClientModelsPayload struct {
 
 // ProvidersForModelFunc returns the providers registered for a model.
 type ProvidersForModelFunc func(string) []string
+
+// OpenAIBackedModels keeps models with known routes exclusively to OpenAI.
+func OpenAIBackedModels(models []map[string]any, providersForModel ProvidersForModelFunc) []map[string]any {
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(stringModelValue(model, "id"))
+		providers := providersForModel(id)
+		if len(providers) != 0 && !slices.ContainsFunc(providers, func(provider string) bool {
+			return provider != "codex" && provider != "openai"
+		}) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
 
 // WebSearchCapabilityForModelFunc returns explicit conservative capability
 // metadata for an exact public model ID. nil means unknown.

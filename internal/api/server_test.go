@@ -3406,6 +3406,82 @@ func TestModelsForCPAClientSerializesWebSearchCapabilities(t *testing.T) {
 	}
 }
 
+func TestCodexModelCatalogOpenAIOnly(t *testing.T) {
+	for _, mode := range []string{"local", "home"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := &proxyconfig.Config{}
+			cfg.APIKeys = []string{"test-key"}
+			if err := yaml.Unmarshal([]byte("client:\n  codex:\n    openai-only-model-catalog: true\n"), cfg); err != nil {
+				t.Fatalf("decode config: %v", err)
+			}
+			server := newTestServerWithConfig(t, cfg)
+			engine := server.engine
+			if mode == "home" {
+				server.cfg.Home.Enabled = true
+				previousHome := home.Current()
+				home.SetCurrent(newHomeCatalogClient(t, `{
+					"codex":[{"id":"catalog-codex"},{"id":"catalog-mixed"}],
+					"openai":[{"id":"catalog-openai"}],
+					"nvidia":[{"id":"openai/gpt-oss-20b","owned_by":"openai"},{"id":"catalog-mixed"}],
+					"claude":[{"id":"catalog-claude"}]
+				}`))
+				t.Cleanup(func() { home.SetCurrent(previousHome) })
+				engine = gin.New()
+				engine.GET("/v1/models", server.unifiedModelsHandler(nil, nil))
+			} else {
+				modelRegistry := registry.GetGlobalRegistry()
+				for provider, ids := range map[string][]string{
+					"codex":  {"catalog-codex", "catalog-mixed"},
+					"openai": {"catalog-openai"},
+					"nvidia": {"openai/gpt-oss-20b", "catalog-mixed"},
+					"claude": {"catalog-claude"},
+				} {
+					clientID := "test-openai-only-catalog-" + provider
+					models := make([]*registry.ModelInfo, 0, len(ids))
+					for _, id := range ids {
+						models = append(models, &registry.ModelInfo{ID: id, OwnedBy: provider})
+					}
+					modelRegistry.RegisterClient(clientID, provider, models)
+					t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
+				}
+			}
+
+			for _, tc := range []struct {
+				query    string
+				array    string
+				key      string
+				allowAll bool
+			}{
+				{"?client_version=0.170.0", "models", "slug", false},
+				{"?client_version=cpa", "models", "slug", true},
+				{"", "data", "id", true},
+			} {
+				request := httptest.NewRequest(http.MethodGet, "/v1/models"+tc.query, nil)
+				request.Header.Set("Authorization", "Bearer test-key")
+				recorder := httptest.NewRecorder()
+				engine.ServeHTTP(recorder, request)
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("GET %s returned status %d", request.URL, recorder.Code)
+				}
+				seen := make(map[string]bool)
+				for _, model := range ojson.GetBytesNoCopy(recorder.Body.Bytes(), tc.array).Array() {
+					seen[model.Get(tc.key).String()] = true
+				}
+				for _, id := range []string{"catalog-codex", "catalog-openai"} {
+					if !seen[id] {
+						t.Errorf("GET %s omitted OpenAI model %q", request.URL, id)
+					}
+				}
+				for _, id := range []string{"catalog-claude", "openai/gpt-oss-20b", "catalog-mixed"} {
+					if seen[id] != tc.allowAll {
+						t.Errorf("GET %s includes %q = %t, want %t", request.URL, id, seen[id], tc.allowAll)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHomeModelsRequirePerEntryWebSearchCapabilityAndConservativeRoutes(t *testing.T) {
 	entries, errDecode := decodeHomeModels([]byte(`{
 		"codex":[

@@ -343,6 +343,8 @@ requests:
 # Client-facing compatibility settings apply to both OAuth and API-key routes.
 client:
   codex:
+    # Limit the Codex client model catalog to models routed exclusively to OpenAI.
+    openai-only-model-catalog: false
     # When false (default), only models that natively declare freeform apply_patch advertise it.
     # When true, non-template and bridged models supported by every routing executor also advertise "freeform".
     enable-apply-patch: false
