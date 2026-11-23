@@ -250,3 +250,139 @@ func TestResponsesInterruptDiagnosticsAreSanitized(t *testing.T) {
 		t.Fatal("timeline was not finalized")
 	}
 }
+
+// A late response.interrupt for an already-completed response must be ignored
+// even if the upstream websocket closed after response.completed, so it never
+// returns a fatal 400 ("no active upstream websocket for response.interrupt")
+// or poisons the next response.create on the same downstream socket.
+func TestResponsesLateInterruptAfterUpstreamDisconnectDoesNotReturn400(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var connections atomic.Int32
+	firstUpstreamClosed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := connections.Add(1)
+		conn, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade: %v", errUpgrade)
+			return
+		}
+		_, create, errRead := conn.ReadMessage()
+		if errRead != nil {
+			_ = conn.Close()
+			return
+		}
+		if ojson.GetBytesNoCopy(create, "type").String() != "response.create" {
+			t.Errorf("unexpected upstream frame on conn %d: %s", n, create)
+			_ = conn.Close()
+			return
+		}
+		id := fmt.Sprintf("r%d", n)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, id))); errWrite != nil {
+			t.Errorf("created: %v", errWrite)
+			_ = conn.Close()
+			return
+		}
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"status":"completed","output":[]}}`, id))); errWrite != nil {
+			t.Errorf("completed: %v", errWrite)
+			_ = conn.Close()
+			return
+		}
+		if n == 1 {
+			// Immediately drop the upstream socket right after r1 completes.
+			_ = conn.Close()
+			close(firstUpstreamClosed)
+			return
+		}
+		_, _, _ = conn.ReadMessage()
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{}
+	cfg.RequestLog = true
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	manager.RegisterExecutor(runtimeexecutor.NewCodexAutoExecutor(cfg))
+	const authID = "late-interrupt-after-disconnect"
+	const model = "late-interrupt-disconnect-model"
+	_, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID: authID, Provider: "codex", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"api_key": "synthetic-key", "base_url": upstream.URL, "websockets": "true"},
+	})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: model}})
+	defer registry.GetGlobalRegistry().UnregisterClient(authID)
+
+	handler := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+	timelines := make(chan string, 1)
+	router := gin.New()
+	router.GET("/v1/responses", func(c *gin.Context) {
+		handler.ResponsesWebsocket(c)
+		body, _ := c.Get(wsTimelineBodyKey)
+		data, _ := body.([]byte)
+		timelines <- string(data)
+	})
+	downstream := httptest.NewServer(router)
+	defer downstream.Close()
+
+	client, _, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(downstream.URL, "http")+"/v1/responses", nil)
+	if errDial != nil {
+		t.Fatal(errDial)
+	}
+	defer func() { _ = client.Close() }()
+	if errDeadline := client.SetReadDeadline(time.Now().Add(5 * time.Second)); errDeadline != nil {
+		t.Fatal(errDeadline)
+	}
+
+	send := func(payload string) {
+		t.Helper()
+		if errWrite := client.WriteMessage(websocket.TextMessage, []byte(payload)); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+	}
+	expect := func(event, id string) {
+		t.Helper()
+		_, payload, errRead := client.ReadMessage()
+		if errRead != nil {
+			t.Fatal(errRead)
+		}
+		if ojson.GetBytesNoCopy(payload, "type").String() != event || ojson.GetBytesNoCopy(payload, "response.id").String() != id {
+			t.Fatalf("expected %s for %s, got %s", event, id, payload)
+		}
+	}
+
+	send(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[]}`, model))
+	expect("response.created", "r1")
+	expect("response.completed", "r1")
+
+	select {
+	case <-firstUpstreamClosed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first upstream socket did not close")
+	}
+	// Give the executor read loop a moment to observe the upstream EOF and clear sess.conn.
+	time.Sleep(50 * time.Millisecond)
+
+	// Late interrupt for completed r1 after upstream socket disconnect must be a no-op.
+	send(`{"type":"response.interrupt","response_id":"r1","mode":"discard_partial_items"}`)
+	// Truly unknown response_id after disconnect must still return an error.
+	send(`{"type":"response.interrupt","response_id":"unknown","mode":"discard_partial_items"}`)
+	expect("error", "")
+
+	// Follow-up turn must succeed without being poisoned by the late r1 interrupt.
+	send(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[]}`, model))
+	expect("response.created", "r2")
+	expect("response.completed", "r2")
+
+	_ = client.Close()
+	select {
+	case timeline := <-timelines:
+		if !strings.Contains(timeline, `"outcome":"already_terminal"`) {
+			t.Errorf("expected already_terminal outcome in timeline: %s", timeline)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeline was not finalized")
+	}
+}

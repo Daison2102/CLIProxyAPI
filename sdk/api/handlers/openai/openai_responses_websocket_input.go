@@ -30,14 +30,52 @@ import (
 // not even in the window after that socket was lost. "No live websocket
 // channel right now" must never be read as "this turn is HTTP".
 type responsesLocalInterrupt struct {
-	mu           sync.Mutex
-	active       bool
-	wsTurnActive bool
-	frames       chan []byte
+	mu                  sync.Mutex
+	active              bool
+	wsTurnActive        bool
+	frames              chan []byte
+	terminalResponseIDs map[string]struct{}
 }
 
 func newResponsesLocalInterrupt() *responsesLocalInterrupt {
-	return &responsesLocalInterrupt{frames: make(chan []byte, 1)}
+	return &responsesLocalInterrupt{
+		frames:              make(chan []byte, 1),
+		terminalResponseIDs: make(map[string]struct{}),
+	}
+}
+
+// recordTerminalResponseID remembers a response ID that already reached a
+// terminal event on this downstream websocket so a delayed response.interrupt
+// arriving after an upstream websocket disconnect or HTTP turn teardown is
+// treated as a no-op instead of returning HTTP 400.
+func (s *responsesLocalInterrupt) recordTerminalResponseID(id string) {
+	if s == nil {
+		return
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.terminalResponseIDs == nil {
+		s.terminalResponseIDs = make(map[string]struct{})
+	}
+	s.terminalResponseIDs[id] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *responsesLocalInterrupt) isTerminalPayload(payload []byte) bool {
+	if s == nil {
+		return false
+	}
+	id := strings.TrimSpace(ojson.GetBytesNoCopy(payload, "response_id").String())
+	if id == "" {
+		return false
+	}
+	s.mu.Lock()
+	_, ok := s.terminalResponseIDs[id]
+	s.mu.Unlock()
+	return ok
 }
 
 // begin activates claims for a turn and records its ownership in the same
@@ -174,6 +212,9 @@ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCause
 				switch {
 				case errInterrupt == nil:
 					appendResponsesInterruptDiagnostic(timeline, payload, "handled")
+					continue
+				case errors.Is(errInterrupt, cliproxyexecutor.ErrNoActiveUpstreamWebsocket) && local.isTerminalPayload(payload):
+					appendResponsesInterruptDiagnostic(timeline, payload, "already_terminal")
 					continue
 				case errors.Is(errInterrupt, cliproxyexecutor.ErrNoActiveUpstreamWebsocket) && local.deliver(payload):
 					appendResponsesInterruptDiagnostic(timeline, payload, "local_http")

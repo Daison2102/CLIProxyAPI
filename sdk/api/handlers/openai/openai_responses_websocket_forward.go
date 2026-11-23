@@ -320,14 +320,17 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				// 	websocketPayloadEventType(payloads[i]),
 				// 	websocketPayloadPreview(payloads[i]),
 				// )
-				if turnEnded && opts.localInterrupt != nil && opts.localInterrupt.isActive() {
-					// Stop claiming local interrupts before the client can see
-					// the terminal event; a later frame is then rejected by
-					// the reader instead of being answered or dropped here.
-					// The isActive guard keeps multi-payload chunks from
-					// toggling the state back off after response.created
-					// reactivated it.
-					opts.localInterrupt.deactivate()
+				if turnEnded && opts.localInterrupt != nil {
+					opts.localInterrupt.recordTerminalResponseID(responseCompletedIDFromPayload(payloads[i]))
+					if opts.localInterrupt.isActive() {
+						// Stop claiming local interrupts before the client can see
+						// the terminal event; a later frame is then rejected by
+						// the reader instead of being answered or dropped here.
+						// The isActive guard keeps multi-payload chunks from
+						// toggling the state back off after response.created
+						// reactivated it.
+						opts.localInterrupt.deactivate()
+					}
 				}
 				markDownstreamCommitted()
 				if errWrite := writeResponsesWebsocketPayload(writer, wsTimelineLog, payloads[i], time.Now()); errWrite != nil {
